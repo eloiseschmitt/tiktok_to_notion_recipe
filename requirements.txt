@@ -1,0 +1,7 @@
+yt-dlp==2024.10.7
+openai-whisper==20231117
+python-dotenv==1.0.1
+requests==2.32.3
+pydantic==2.9.2
+reportlab==4.2.2
+markdownify==0.13.1
