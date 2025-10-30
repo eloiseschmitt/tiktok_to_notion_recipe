@@ -1,4 +1,5 @@
 from notion_client import create_recipe_page
+from recipe_models import RecipeContent, PublishingContext
 
 
 class DummyResponse:
@@ -22,17 +23,24 @@ def test_create_recipe_page_builds_expected_payload(monkeypatch):
 
     monkeypatch.setattr("notion_client.requests.post", fake_post)
 
+    recipe = RecipeContent(
+        title="Tarte aux pommes",
+        ingredients=["2 pommes", "100 g sucre"],
+        steps=["Couper les pommes", "Cuire"],
+        prep_minutes=30,
+    )
+    context = PublishingContext(
+        source_url="https://example.com",
+        tags=["Dessert"],
+        prep_time_text="Environ 30 minutes",
+        thumbnail_url="https://image.example.com"
+    )
+
     result = create_recipe_page(
         token="secret-token",
         database_id="db123",
-        title="Tarte aux pommes",
-        source_url="https://example.com",
-        ingredients=["2 pommes", "100 g sucre"],
-        steps=["Couper les pommes", "Cuire"],
-        tags=["Dessert"],
-        prep_minutes=30,
-        prep_time_text="Environ 30 minutes",
-        thumbnail_url="https://image.example.com"
+        recipe=recipe,
+        context=context
     )
 
     assert result["id"] == "dummy"
@@ -61,6 +69,13 @@ def test_create_recipe_page_builds_expected_payload(monkeypatch):
         block["numbered_list_item"]["rich_text"][0]["text"]["content"]
         for block in step_blocks
     ] == ["Couper les pommes", "Cuire"]
+
+    # Prep time paragraph reflects context
+    assert any(
+        block["type"] == "paragraph" and
+        block["paragraph"]["rich_text"][0]["text"]["content"] == "Environ 30 minutes"
+        for block in payload["children"]
+    )
 
     # Thumbnail block should be an external image
     image_block = next(block for block in payload["children"] if block["type"] == "image")

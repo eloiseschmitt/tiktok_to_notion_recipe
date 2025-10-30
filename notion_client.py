@@ -2,6 +2,8 @@ import os
 import requests
 from typing import List, Dict, Optional
 
+from recipe_models import RecipeContent, PublishingContext
+
 NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
 
@@ -12,47 +14,55 @@ def _headers(token: str) -> Dict[str, str]:
         "Content-Type": "application/json"
     }
 
-def create_recipe_page(
-    token: str,
-    database_id: str,
-    title: str,
-    source_url: Optional[str],
-    ingredients: List[str],
-    steps: List[str],
-    tags: Optional[List[str]] = None,
-    prep_minutes: Optional[int] = None,
-    prep_time_text: Optional[str] = None,
-    thumbnail_url: Optional[str] = None
-) -> Dict:
-    properties: Dict[str, Dict] = {
-        "Nom": {"title": [{"text": {"content": title}}]}
+def _text(content: str) -> Dict:
+    return {"type": "text", "text": {"content": content}}
+
+
+def _heading(level: int, content: str) -> Dict:
+    key = f"heading_{level}"
+    return {
+        "object": "block",
+        "type": key,
+        key: {"rich_text": [_text(content)]}
     }
-    if source_url:
-        properties["Lien vers la recette"] = {"url": source_url}
-    if tags:
-        properties["Tags"] = {"multi_select": [{"name": t} for t in tags]}
-    if prep_minutes is not None:
-        properties["Temps (min)"] = {"number": prep_minutes}
 
-    children: List[Dict] = []
-    children.append({
-        "object": "block",
-        "type": "heading_1",
-        "heading_1": {
-            "rich_text": [{"type": "text", "text": {"content": "Recette"}}]
-        }
-    })
 
-    # Photo section
-    children.append({
+def _paragraph(content: str) -> Dict:
+    return {
         "object": "block",
-        "type": "heading_3",
-        "heading_3": {
-            "rich_text": [{"type": "text", "text": {"content": "Photo"}}]
-        }
-    })
+        "type": "paragraph",
+        "paragraph": {"rich_text": [_text(content)]}
+    }
+
+
+def _bulleted_items(items: List[str], placeholder: str) -> List[Dict]:
+    if not items:
+        return [{
+            "object": "block",
+            "type": "bulleted_list_item",
+            "bulleted_list_item": {"rich_text": [_text(placeholder)]}
+        }]
+    return [{
+        "object": "block",
+        "type": "bulleted_list_item",
+        "bulleted_list_item": {"rich_text": [_text(item)]}
+    } for item in items]
+
+
+def _numbered_items(items: List[str], placeholder: str) -> List[Dict]:
+    if not items:
+        items = [placeholder]
+    return [{
+        "object": "block",
+        "type": "numbered_list_item",
+        "numbered_list_item": {"rich_text": [_text(item)]}
+    } for item in items]
+
+
+def _photo_block(thumbnail_url: Optional[str]) -> List[Dict]:
+    blocks = [_heading(3, "Photo")]
     if thumbnail_url:
-        children.append({
+        blocks.append({
             "object": "block",
             "type": "image",
             "image": {
@@ -61,102 +71,36 @@ def create_recipe_page(
             }
         })
     else:
-        children.append({
-            "object": "block",
-            "type": "paragraph",
-            "paragraph": {
-                "rich_text": [{"type": "text", "text": {"content": "Ajouter une photo de la recette."}}]
-            }
-        })
+        blocks.append(_paragraph("Ajouter une photo de la recette."))
+    return blocks
 
-    # Ingredients
-    children.append({
-        "object": "block",
-        "type": "heading_3",
-        "heading_3": {
-            "rich_text": [{"type": "text", "text": {"content": "Ingrédients"}}]
-        }
-    })
-    if ingredients:
-        for ing in ingredients:
-            children.append({
-                "object": "block",
-                "type": "bulleted_list_item",
-                "bulleted_list_item": {
-                    "rich_text": [{"type": "text", "text": {"content": ing}}]
-                }
-            })
-    else:
-        children.append({
-            "object": "block",
-            "type": "bulleted_list_item",
-            "bulleted_list_item": {
-                "rich_text": [{"type": "text", "text": {"content": "Ajouter les ingrédients."}}]
-            }
-        })
 
-    # Temps de préparation
-    children.append({
-        "object": "block",
-        "type": "heading_3",
-        "heading_3": {
-            "rich_text": [{"type": "text", "text": {"content": "Temps de préparation"}}]
-        }
-    })
-    children.append({
-        "object": "block",
-        "type": "paragraph",
-        "paragraph": {
-            "rich_text": [{"type": "text", "text": {"content": prep_time_text or "@mentionn"}}]
-        }
-    })
+def create_recipe_page(
+    token: str,
+    database_id: str,
+    recipe: RecipeContent,
+    context: PublishingContext
+) -> Dict:
+    properties: Dict[str, Dict] = {
+        "Nom": {"title": [_text(recipe.title)]}
+    }
+    if context.source_url:
+        properties["Lien vers la recette"] = {"url": context.source_url}
+    if context.tags:
+        properties["Tags"] = {"multi_select": [{"name": t} for t in context.tags]}
+    if recipe.prep_minutes is not None:
+        properties["Temps (min)"] = {"number": recipe.prep_minutes}
 
-    # Étapes
-    children.append({
-        "object": "block",
-        "type": "heading_3",
-        "heading_3": {
-            "rich_text": [{"type": "text", "text": {"content": "Étapes"}}]
-        }
-    })
-    if steps:
-        for s in steps:
-            children.append({
-                "object": "block",
-                "type": "numbered_list_item",
-                "numbered_list_item": {
-                    "rich_text": [{"type": "text", "text": {"content": s}}]
-                }
-            })
-    else:
-        children.append({
-            "object": "block",
-            "type": "numbered_list_item",
-            "numbered_list_item": {
-                "rich_text": [{"type": "text", "text": {"content": "Ajouter les étapes."}}]
-            }
-        })
-
-    # Lien vers la recette originale
-    children.append({
-        "object": "block",
-        "type": "heading_3",
-        "heading_3": {
-            "rich_text": [{"type": "text", "text": {"content": "Lien vers la recette originale"}}]
-        }
-    })
-    children.append({
-        "object": "block",
-        "type": "paragraph",
-        "paragraph": {
-            "rich_text": [{
-                "type": "text",
-                "text": {
-                    "content": "Renseignez l'URL dans la propriété \"Lien vers la recette\" de cette page."
-                }
-            }]
-        }
-    })
+    children: List[Dict] = [_heading(1, "Recette")]
+    children.extend(_photo_block(context.thumbnail_url))
+    children.append(_heading(3, "Ingrédients"))
+    children.extend(_bulleted_items(recipe.ingredients, "Ajouter les ingrédients."))
+    children.append(_heading(3, "Temps de préparation"))
+    children.append(_paragraph(context.prep_time_text or "@mentionn"))
+    children.append(_heading(3, "Étapes"))
+    children.extend(_numbered_items(recipe.steps, "Ajouter les étapes."))
+    children.append(_heading(3, "Lien vers la recette originale"))
+    children.append(_paragraph("Renseignez l'URL dans la propriété \"Lien vers la recette\" de cette page."))
 
     payload = {
         "parent": {"database_id": database_id},

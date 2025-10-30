@@ -8,8 +8,9 @@ from dotenv import load_dotenv
 
 import whisper
 import yt_dlp
-from parser import guess_ingredients_and_steps, normalize_title, INGREDIENT_LINE_RE
+from recipe_parser import guess_ingredients_and_steps, normalize_title, INGREDIENT_LINE_RE
 from notion_client import create_recipe_page
+from recipe_models import RecipeContent, PublishingContext
 
 TIME_PATTERNS = [
     re.compile(r"(?:(\d+)\s*h)?\s*(\d+)?\s*(?:min|mn|minutes?)", re.I),
@@ -145,6 +146,45 @@ def tidy_recipe_lists(
     return cleaned_ingredients, cleaned_steps
 
 
+def heuristic_recipe(title_hint: str, combined_text: str) -> RecipeContent:
+    title = normalize_title(title_hint)
+    ingredients, steps = guess_ingredients_and_steps(combined_text)
+    return RecipeContent(title=title, ingredients=ingredients, steps=steps)
+
+
+def enrich_with_title_ingredients(recipe: RecipeContent, title_hint: str) -> None:
+    extras = extract_ingredients_from_title(title_hint)
+    if not extras:
+        return
+
+    existing_lower = {ing.lower() for ing in recipe.ingredients}
+    for extra in extras:
+        lowered = extra.lower()
+        if lowered not in existing_lower:
+            recipe.ingredients.append(extra)
+            existing_lower.add(lowered)
+
+
+def ensure_prep_minutes(recipe: RecipeContent, combined_text: str) -> None:
+    if recipe.prep_minutes is None:
+        recipe.prep_minutes = estimate_prep_time(combined_text, recipe.steps)
+
+
+def format_prep_time(minutes: Optional[int]) -> str:
+    return f"Environ {minutes} minutes" if minutes else "Temps à préciser"
+
+
+def extract_thumbnail(video_meta: Any) -> Optional[str]:
+    if not isinstance(video_meta, dict):
+        return None
+    thumbnails = video_meta.get("thumbnails") or []
+    if thumbnails:
+        url = thumbnails[-1].get("url")
+        if url:
+            return url
+    return video_meta.get("thumbnail")
+
+
 def estimate_prep_time(text: str, fallback_steps: Optional[List[str]] = None) -> Optional[int]:
     """Try to estimate prep time in minutes from transcript or steps."""
     normalized = text.lower()
@@ -189,18 +229,14 @@ def _extract_first_json_block(text: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def gpt_structure(transcript: str, title_hint: str) -> Tuple[str, List[str], List[str], Optional[int]]:
-    """
-    If OPENAI_API_KEY is set, ask GPT to produce a structured recipe and estimate prep time.
-    Returns (title, ingredients, steps, prep_minutes). Falls back to heuristics on error.
-    """
+def gpt_structure(transcript: str, title_hint: str) -> RecipeContent:
+    """Use GPT to structure the recipe. Falls back to heuristics on failure."""
     import requests
 
     api_key = os.getenv("OPENAI_API_KEY")
     combined_text = combine_title_transcript(title_hint, transcript)
     if not api_key:
-        ingredients, steps = guess_ingredients_and_steps(combined_text)
-        return normalize_title(title_hint), ingredients, steps, None
+        return heuristic_recipe(title_hint, combined_text)
 
     system = (
         "You are a meticulous culinary editor. Extract a clean recipe in French when possible, otherwise English. "
@@ -246,7 +282,7 @@ Transcript:
             raise ValueError("No JSON in GPT response")
 
         title = normalize_title(data.get("title") or title_hint)
-        ings = [i.strip() for i in data.get("ingredients") or [] if i.strip()]
+        ingredients = [i.strip() for i in data.get("ingredients") or [] if i.strip()]
         steps = [s.strip() for s in data.get("steps") or [] if s.strip()]
         prep_minutes = data.get("prep_time_minutes")
         if prep_minutes is not None:
@@ -257,19 +293,17 @@ Transcript:
             except (ValueError, TypeError):
                 prep_minutes = None
 
-        if not ings or not steps:
+        if not ingredients or not steps:
             # fallback to heuristic merge
             h_ings, h_steps = guess_ingredients_and_steps(combined_text)
-            if not ings:
-                ings = h_ings
+            if not ingredients:
+                ingredients = h_ings
             if not steps:
                 steps = h_steps
 
-        return title, ings, steps, prep_minutes
+        return RecipeContent(title=title, ingredients=ingredients, steps=steps, prep_minutes=prep_minutes)
     except Exception:
-        title = normalize_title(title_hint)
-        ings, steps = guess_ingredients_and_steps(combined_text)
-        return title, ings, steps, None
+        return heuristic_recipe(title_hint, combined_text)
 
 
 def download_audio(url: str, tmpdir: Path) -> Tuple[Path, str, Dict[str, Any]]:
@@ -293,24 +327,24 @@ def transcribe(audio_path: Path, model_name: str = "small") -> str:
     result = model.transcribe(str(audio_path), language=None)  # autodetect
     return result.get("text","").strip()
 
-def render_markdown(title: str, ingredients: List[str], steps: List[str], source_url: Optional[str]) -> str:
-    md = [f"# {title}", ""]
+def render_markdown(recipe: RecipeContent, source_url: Optional[str]) -> str:
+    md = [f"# {recipe.title}", ""]
     if source_url:
         md.append(f"_Source: {source_url}_")
         md.append("")
-    if ingredients:
+    if recipe.ingredients:
         md.append("## Ingrédients / Ingredients")
-        for ing in ingredients:
+        for ing in recipe.ingredients:
             md.append(f"- {ing}")
         md.append("")
-    if steps:
+    if recipe.steps:
         md.append("## Étapes / Steps")
-        for i, s in enumerate(steps, 1):
+        for i, s in enumerate(recipe.steps, 1):
             md.append(f"{i}. {s}")
         md.append("")
     return "\n".join(md).strip() + "\n"
 
-def export_pdf(title: str, ingredients: List[str], steps: List[str], pdf_path: Path):
+def export_pdf(recipe: RecipeContent, pdf_path: Path):
     # Simple A4 PDF with ReportLab
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
@@ -335,21 +369,49 @@ def export_pdf(title: str, ingredients: List[str], steps: List[str], pdf_path: P
             y -= leading
 
     # Title
-    draw_text(title, font=("Helvetica-Bold", 16), leading=20)
+    draw_text(recipe.title, font=("Helvetica-Bold", 16), leading=20)
     y -= 8
 
-    if ingredients:
+    if recipe.ingredients:
         draw_text("Ingrédients / Ingredients", font=("Helvetica-Bold", 12), leading=16)
-        for ing in ingredients:
+        for ing in recipe.ingredients:
             draw_text(f"• {ing}")
         y -= 8
 
-    if steps:
+    if recipe.steps:
         draw_text("Étapes / Steps", font=("Helvetica-Bold", 12), leading=16)
-        for i, s in enumerate(steps, 1):
+        for i, s in enumerate(recipe.steps, 1):
             draw_text(f"{i}. {s}")
 
     c.save()
+
+
+def build_recipe_content(transcript: str, raw_title: str, use_gpt: bool, api_key_available: bool) -> RecipeContent:
+    combined_text = combine_title_transcript(raw_title, transcript)
+
+    if use_gpt and api_key_available:
+        recipe = gpt_structure(transcript, raw_title)
+    else:
+        recipe = heuristic_recipe(raw_title, combined_text)
+        if api_key_available:
+            gpt_recipe = gpt_structure(transcript, raw_title)
+            if gpt_recipe.prep_minutes is not None:
+                recipe.prep_minutes = gpt_recipe.prep_minutes
+
+    enrich_with_title_ingredients(recipe, raw_title)
+    recipe.ingredients, recipe.steps = tidy_recipe_lists(recipe.ingredients, recipe.steps, raw_title)
+    ensure_prep_minutes(recipe, combined_text)
+    return recipe
+
+
+def build_publishing_context(source_url: str, recipe: RecipeContent, video_meta: Any) -> PublishingContext:
+    return PublishingContext(
+        source_url=source_url,
+        tags=["TikTok"],
+        prep_time_text=format_prep_time(recipe.prep_minutes),
+        thumbnail_url=extract_thumbnail(video_meta)
+    )
+
 
 def main():
     load_dotenv()
@@ -369,53 +431,20 @@ def main():
         tmpdir = Path(tmp)
         audio_path, raw_title, video_meta = download_audio(args.url, tmpdir)
         transcript = transcribe(audio_path, model_name=args.whisper_model)
-    combined_text = combine_title_transcript(raw_title, transcript)
-
     api_key_available = bool(os.getenv("OPENAI_API_KEY"))
-    if args.use_gpt and api_key_available:
-        title, ingredients, steps, prep_minutes = gpt_structure(transcript, raw_title)
-    else:
-        title = normalize_title(raw_title)
-        ingredients, steps = guess_ingredients_and_steps(combined_text)
-        prep_minutes = None
-        if api_key_available:
-            # Reuse GPT only to estimate time while keeping heuristic structure.
-            _, _, _, gpt_minutes = gpt_structure(transcript, raw_title)
-            prep_minutes = gpt_minutes
-
-    title_ingredients = extract_ingredients_from_title(raw_title)
-    if title_ingredients:
-        existing_lower = {ing.lower() for ing in ingredients}
-        for extra in title_ingredients:
-            lowered = extra.lower()
-            if lowered not in existing_lower:
-                ingredients.append(extra)
-                existing_lower.add(lowered)
-
-    ingredients, steps = tidy_recipe_lists(ingredients, steps, raw_title)
-
-    if prep_minutes is None:
-        prep_minutes = estimate_prep_time(combined_text, steps)
-
-    prep_time_text = f"Environ {prep_minutes} minutes" if prep_minutes else "Temps à préciser"
-    thumbnail_url = None
-    if isinstance(video_meta, dict):
-        thumbnails = video_meta.get("thumbnails") or []
-        if thumbnails:
-            thumbnail_url = thumbnails[-1].get("url")
-        if not thumbnail_url:
-            thumbnail_url = video_meta.get("thumbnail")
+    recipe = build_recipe_content(transcript, raw_title, args.use_gpt, api_key_available)
+    context = build_publishing_context(args.url, recipe, video_meta)
 
     # Write Markdown
-    md = render_markdown(title, ingredients, steps, args.url)
-    md_path = out_dir / (title.replace("/", "-")[:80] + ".md")
+    md = render_markdown(recipe, args.url)
+    md_path = out_dir / (recipe.title.replace("/", "-")[:80] + ".md")
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(md)
 
     pdf_path = None
     if args.export_pdf:
-        pdf_path = out_dir / (title.replace("/", "-")[:80] + ".pdf")
-        export_pdf(title, ingredients, steps, pdf_path)
+        pdf_path = out_dir / (recipe.title.replace("/", "-")[:80] + ".pdf")
+        export_pdf(recipe, pdf_path)
 
     # Notion push
     if args.to_notion:
@@ -426,14 +455,8 @@ def main():
         create_recipe_page(
             token=token,
             database_id=dbid,
-            title=title,
-            source_url=args.url,
-            ingredients=ingredients,
-            steps=steps,
-            tags=["TikTok"],
-            prep_minutes=prep_minutes,
-            prep_time_text=prep_time_text,
-            thumbnail_url=thumbnail_url
+            recipe=recipe,
+            context=context
         )
 
     print("Done.")

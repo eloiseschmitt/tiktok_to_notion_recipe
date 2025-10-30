@@ -1,8 +1,10 @@
 from pathlib import Path
 
-from parser import guess_ingredients_and_steps, normalize_title
+from recipe_parser import guess_ingredients_and_steps, normalize_title
+from recipe_models import RecipeContent
 from tiktok_to_notion import (
     combine_title_transcript,
+    ensure_prep_minutes,
     extract_ingredients_from_title,
     tidy_recipe_lists,
     render_markdown,
@@ -52,14 +54,19 @@ def run_fixture_pipeline():
 
     ingredients, steps = tidy_recipe_lists(ingredients, steps, FIXTURE_TITLE)
 
+    recipe = RecipeContent(
+        title=normalize_title(FIXTURE_TITLE),
+        ingredients=ingredients,
+        steps=steps
+    )
+    ensure_prep_minutes(recipe, combined)
+
     markdown = render_markdown(
-        normalize_title(FIXTURE_TITLE),
-        ingredients,
-        steps,
+        recipe,
         source_url="https://example.com/video",
     )
 
-    return ingredients, steps, markdown
+    return recipe.ingredients, recipe.steps, markdown
 
 
 def test_fixture_ingredients_and_steps_match_approvals():

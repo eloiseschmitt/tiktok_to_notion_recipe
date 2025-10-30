@@ -29,6 +29,7 @@ INGREDIENT_LINE_RE = re.compile(
 
 def split_sentences(text: str) -> List[str]:
     # Simple multilingual sentence split
+    text = text.replace("\\n", "\n")
     parts = re.split(r"(?<=[\.\!\?])\s+(?=[A-ZÀÂÄÇÉÈÊËÎÏÔÖÙÛÜŸ0-9])", text.strip())
     # fallback if few separators
     if len(parts) == 1:

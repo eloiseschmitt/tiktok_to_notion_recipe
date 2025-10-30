@@ -1,4 +1,4 @@
-from parser import guess_ingredients_and_steps, normalize_title, split_sentences
+from recipe_parser import guess_ingredients_and_steps, normalize_title, split_sentences
 
 
 def test_guess_ingredients_and_steps_extracts_bullets_and_sentences():
