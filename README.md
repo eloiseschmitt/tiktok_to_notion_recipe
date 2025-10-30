@@ -75,3 +75,13 @@ The script writes to these properties only. You can add other properties for you
 - When GPT is disabled, the script still tries to pull ingredient hints from the TikTok title in addition to the transcript.
 - Whisper accuracy depends on audio clarity. Consider `--whisper-model medium` for better results.
 - Respect creator rights. Keep recipes for personal use.
+
+## Tests
+
+This project uses simple approval tests to guard the recipe parsing heuristics.
+
+```bash
+pytest
+```
+
+If an approval mismatch occurs, inspect the diff and update the corresponding file in `tests/approvals/` if the new behaviour is correct.

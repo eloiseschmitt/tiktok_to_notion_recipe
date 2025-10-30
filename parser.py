@@ -33,7 +33,18 @@ def split_sentences(text: str) -> List[str]:
     # fallback if few separators
     if len(parts) == 1:
         parts = re.split(r"\s*[\n\r]+\s*", text.strip())
-    return [p.strip() for p in parts if p.strip()]
+
+    segments: List[str] = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        subparts = re.split(r"\s*[\n\r]+\s*", part)
+        for sub in subparts:
+            sub = sub.strip()
+            if sub:
+                segments.append(sub)
+    return segments
 
 def guess_ingredients_and_steps(transcript: str) -> Tuple[List[str], List[str]]:
     lines = [l.strip() for l in re.split(r"[\n\r]+", transcript) if l.strip()]

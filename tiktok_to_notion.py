@@ -96,7 +96,11 @@ def _strip_list_prefix(text: str) -> str:
     return LIST_PREFIX_RE.sub("", text).strip()
 
 
-def tidy_recipe_lists(ingredients: List[str], steps: List[str]) -> Tuple[List[str], List[str]]:
+def tidy_recipe_lists(
+    ingredients: List[str],
+    steps: List[str],
+    title_hint: Optional[str] = None
+) -> Tuple[List[str], List[str]]:
     cleaned_ingredients: List[str] = []
     ing_seen = set()
     for ing in ingredients:
@@ -111,11 +115,21 @@ def tidy_recipe_lists(ingredients: List[str], steps: List[str]) -> Tuple[List[st
 
     cleaned_steps: List[str] = []
     step_seen = set()
+    title_lowers = set()
+    if title_hint:
+        raw = title_hint.strip().lower()
+        if raw:
+            title_lowers.add(raw)
+        normalized = normalize_title(title_hint).strip().lower()
+        if normalized:
+            title_lowers.add(normalized)
     for step in steps:
         text = _strip_list_prefix(step.strip())
         if not text:
             continue
         lowered = text.lower()
+        if title_lowers and lowered in title_lowers:
+            continue
         if lowered in ing_seen:
             continue
         if INGREDIENT_LINE_RE.match(text):
@@ -378,7 +392,7 @@ def main():
                 ingredients.append(extra)
                 existing_lower.add(lowered)
 
-    ingredients, steps = tidy_recipe_lists(ingredients, steps)
+    ingredients, steps = tidy_recipe_lists(ingredients, steps, raw_title)
 
     if prep_minutes is None:
         prep_minutes = estimate_prep_time(combined_text, steps)

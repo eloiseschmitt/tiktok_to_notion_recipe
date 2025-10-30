@@ -6,3 +6,4 @@ requests==2.32.3
 pydantic==2.9.2
 reportlab==4.2.2
 markdownify==0.13.1
+pytest==8.3.3

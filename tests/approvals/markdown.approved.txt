@@ -1,0 +1,17 @@
+# Pâtes crémeuses au poulet - ingrédients: poulet, crème, parmesan
+
+_Source: https://example.com/video_
+
+## Ingrédients / Ingredients
+- 200 g de poulet
+- 1 oignon
+- 1 gousse d'ail
+- poulet
+- crème
+- parmesan
+
+## Étapes / Steps
+1. Faites revenir le poulet quelques minutes.
+2. Ajoutez l'oignon et l'ail puis laissez cuire.
+3. Versez la crème et mélangez doucement.
+4. Parsemez de parmesan et servez chaud.
