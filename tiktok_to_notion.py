@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 import whisper
 import yt_dlp
-from parser import guess_ingredients_and_steps, normalize_title
+from parser import guess_ingredients_and_steps, normalize_title, INGREDIENT_LINE_RE
 from notion_client import create_recipe_page
 
 TIME_PATTERNS = [
@@ -87,6 +87,48 @@ def extract_ingredients_from_title(title_hint: str) -> List[str]:
         seen.add(lowered)
         results.append(part)
     return results
+
+
+LIST_PREFIX_RE = re.compile(r"^\s*(?:[-\*\u2022]|\d+[\).])\s*")
+
+
+def _strip_list_prefix(text: str) -> str:
+    return LIST_PREFIX_RE.sub("", text).strip()
+
+
+def tidy_recipe_lists(ingredients: List[str], steps: List[str]) -> Tuple[List[str], List[str]]:
+    cleaned_ingredients: List[str] = []
+    ing_seen = set()
+    for ing in ingredients:
+        text = _strip_list_prefix(ing.strip())
+        if not text:
+            continue
+        lowered = text.lower()
+        if lowered in ing_seen:
+            continue
+        ing_seen.add(lowered)
+        cleaned_ingredients.append(text)
+
+    cleaned_steps: List[str] = []
+    step_seen = set()
+    for step in steps:
+        text = _strip_list_prefix(step.strip())
+        if not text:
+            continue
+        lowered = text.lower()
+        if lowered in ing_seen:
+            continue
+        if INGREDIENT_LINE_RE.match(text):
+            if lowered not in ing_seen:
+                ing_seen.add(lowered)
+                cleaned_ingredients.append(text)
+            continue
+        if lowered in step_seen:
+            continue
+        step_seen.add(lowered)
+        cleaned_steps.append(text)
+
+    return cleaned_ingredients, cleaned_steps
 
 
 def estimate_prep_time(text: str, fallback_steps: Optional[List[str]] = None) -> Optional[int]:
@@ -335,6 +377,8 @@ def main():
             if lowered not in existing_lower:
                 ingredients.append(extra)
                 existing_lower.add(lowered)
+
+    ingredients, steps = tidy_recipe_lists(ingredients, steps)
 
     if prep_minutes is None:
         prep_minutes = estimate_prep_time(combined_text, steps)
