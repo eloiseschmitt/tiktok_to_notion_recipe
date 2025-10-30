@@ -2,13 +2,13 @@ from pathlib import Path
 
 from recipe_parser import guess_ingredients_and_steps, normalize_title
 from recipe_models import RecipeContent
-from tiktok_to_notion import (
+from recipe_extractor import (
     combine_title_transcript,
     ensure_prep_minutes,
     extract_ingredients_from_title,
     tidy_recipe_lists,
-    render_markdown,
 )
+from tiktok_to_notion import render_markdown
 
 
 APPROVAL_DIR = Path(__file__).parent / "approvals"
