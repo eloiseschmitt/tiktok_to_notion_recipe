@@ -1,9 +1,9 @@
 import argparse
 import os
-import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional, Tuple, List
+import re
+from typing import Optional, Tuple, List, Dict, Any
 from dotenv import load_dotenv
 
 import whisper
@@ -11,26 +11,157 @@ import yt_dlp
 from parser import guess_ingredients_and_steps, normalize_title
 from notion_client import create_recipe_page
 
+TIME_PATTERNS = [
+    re.compile(r"(?:(\d+)\s*h)?\s*(\d+)?\s*(?:min|mn|minutes?)", re.I),
+    re.compile(r"(\d+)\s*h(?:eurs?)?", re.I)
+]
+
+
+def combine_title_transcript(title_hint: str, transcript: str) -> str:
+    parts = []
+    if title_hint:
+        parts.append(title_hint.strip())
+    if transcript:
+        parts.append(transcript.strip())
+    return "\n\n".join([p for p in parts if p])
+
+
+TITLE_STOPWORDS_WORDS = {
+    "recette", "recipe", "tiktok", "facile", "easy", "rapide", "quick",
+    "pour", "sans", "astuce", "tips", "comment", "best"
+}
+TITLE_STOPWORDS_PHRASES = {"how to", "easy recipe"}
+
+
+def extract_ingredients_from_title(title_hint: str) -> List[str]:
+    if not title_hint:
+        return []
+
+    cleaned = re.sub(r"#\w+", "", title_hint).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    if not cleaned:
+        return []
+
+    segment = cleaned
+    keyword_patterns = [
+        r"(?i)ingr[ée]dients?[:\-\|\s]+(.+)",
+        r"(?i)(?:avec|with)\s+(.+)",
+    ]
+    for pat in keyword_patterns:
+        m = re.search(pat, cleaned)
+        if m:
+            segment = m.group(1)
+            break
+    else:
+        for sep in [":", "-", "–", "—", "|"]:
+            if sep in cleaned:
+                segment = cleaned.split(sep, 1)[1].strip()
+                break
+
+    segment = re.split(r"[\(\[]", segment)[0].strip()
+    if not segment:
+        return []
+
+    normalized = segment
+    normalized = re.sub(r"(?i)\b(et|and|avec|with)\b", ",", normalized)
+    for token in [" - ", " | "]:
+        normalized = normalized.replace(token, ",")
+    normalized = re.sub(r",+", ",", normalized)
+
+    parts = [p.strip(" .!?'\"") for p in normalized.split(",")]
+    results: List[str] = []
+    seen = set()
+    for part in parts:
+        if not part:
+            continue
+        lowered = part.lower()
+        if lowered in seen:
+            continue
+        words = set(re.findall(r"[a-zà-ÿ]+", lowered))
+        if words & TITLE_STOPWORDS_WORDS:
+            continue
+        if any(phrase in lowered for phrase in TITLE_STOPWORDS_PHRASES):
+            continue
+        if not re.search(r"[a-zà-ÿ]", lowered):
+            continue
+        seen.add(lowered)
+        results.append(part)
+    return results
+
+
+def estimate_prep_time(text: str, fallback_steps: Optional[List[str]] = None) -> Optional[int]:
+    """Try to estimate prep time in minutes from transcript or steps."""
+    normalized = text.lower()
+    for pattern in TIME_PATTERNS:
+        for match in pattern.finditer(normalized):
+            hours = 0
+            minutes = 0
+            if pattern.groups >= 2:
+                if match.group(1):
+                    hours = int(match.group(1))
+                if match.group(2):
+                    minutes = int(match.group(2))
+            elif pattern.groups == 1 and match.group(1):
+                minutes = int(match.group(1)) * 60
+            total = hours * 60 + minutes
+            if total > 0:
+                return total
+
+    if fallback_steps:
+        # Heuristic: ~6 minutes per step, min 10 minutes.
+        estimate = max(10, len(fallback_steps) * 6)
+        return estimate
+
+    return None
+
 # Optional GPT structuring (only used if OPENAI_API_KEY is set)
-def gpt_structure(transcript: str, title_hint: str) -> Tuple[str, List[str], List[str]]:
-    """
-    If OPENAI_API_KEY is set, try to ask GPT to produce a better structured recipe.
-    Returns (title, ingredients, steps).
-    Fallback to heuristic if any error.
-    """
-    import os
+def _extract_first_json_block(text: str) -> Optional[Dict[str, Any]]:
+    """Return first JSON object found in text, if any."""
     import json
+
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    json_match = re.search(r"\{.*\}", text, re.S)
+    if not json_match:
+        return None
+    try:
+        return json.loads(json_match.group(0))
+    except Exception:
+        return None
+
+
+def gpt_structure(transcript: str, title_hint: str) -> Tuple[str, List[str], List[str], Optional[int]]:
+    """
+    If OPENAI_API_KEY is set, ask GPT to produce a structured recipe and estimate prep time.
+    Returns (title, ingredients, steps, prep_minutes). Falls back to heuristics on error.
+    """
     import requests
 
     api_key = os.getenv("OPENAI_API_KEY")
+    combined_text = combine_title_transcript(title_hint, transcript)
     if not api_key:
-        return normalize_title(title_hint), *guess_ingredients_and_steps(transcript)
+        ingredients, steps = guess_ingredients_and_steps(combined_text)
+        return normalize_title(title_hint), ingredients, steps, None
 
-    system = "You are a meticulous culinary editor. Extract a clean recipe in French when possible, otherwise English."
-    user = f"""Here is a transcript of a cooking TikTok. Extract a concise recipe with:
-- Title (short, no hashtags)
-- Ingredients (bulleted list; quantities + units if present)
-- Steps (numbered, 6-10 crisp steps max)
+    system = (
+        "You are a meticulous culinary editor. Extract a clean recipe in French when possible, otherwise English. "
+        "Return valid JSON only."
+    )
+    user = f"""Here is metadata for a cooking TikTok. Use everything (title + transcript) to extract a concise recipe and estimate how long the preparation takes.
+Return ONLY a JSON object with the following shape (numbers in minutes):
+{{
+  "title": "...",
+  "ingredients": ["..."],
+  "steps": ["..."],
+  "prep_time_minutes": 20
+}}
+Video title:
+\"\"\"
+{title_hint}
+\"\"\"
 Transcript:
 \"\"\"
 {transcript}
@@ -52,41 +183,40 @@ Transcript:
             timeout=60
         )
         resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
-        # naive parse: split sections
-        title = normalize_title(title_hint)
-        ings, steps = [], []
-        # try to find Ingredients and Steps sections
-        import re
-        block = content.strip()
-        # extract title from first line if markdown header present
-        m = re.match(r"^\s*#*\s*(.+)\n", block)
-        if m:
-            cand = m.group(1).strip()
-            if cand and len(cand) <= 120:
-                title = normalize_title(cand)
-        # collect list items
-        ing_sec = re.search(r"(Ingr[ée]dients|Ingredients)[:\n\r]+(.+?)(?:\n\n|Étapes|Steps|$)", block, re.S|re.I)
-        if ing_sec:
-            ings_text = ing_sec.group(2).strip()
-            ings = [re.sub(r"^[\-\*\u2022]\s*","",l).strip() for l in ings_text.splitlines() if l.strip()]
-        step_sec = re.search(r"(Étapes|Steps)[:\n\r]+(.+)$", block, re.S|re.I)
-        if step_sec:
-            steps_text = step_sec.group(2).strip()
-            # split numbered or lines
-            raw_steps = [re.sub(r"^\s*\d+[\).\-\u2022]?\s*","",l).strip() for l in steps_text.splitlines() if l.strip()]
-            steps = [s for s in raw_steps if len(s)>2]
+        content = resp.json()["choices"][0]["message"]["content"].strip()
+
+        data = _extract_first_json_block(content)
+        if not data:
+            raise ValueError("No JSON in GPT response")
+
+        title = normalize_title(data.get("title") or title_hint)
+        ings = [i.strip() for i in data.get("ingredients") or [] if i.strip()]
+        steps = [s.strip() for s in data.get("steps") or [] if s.strip()]
+        prep_minutes = data.get("prep_time_minutes")
+        if prep_minutes is not None:
+            try:
+                prep_minutes = int(prep_minutes)
+                if prep_minutes <= 0:
+                    prep_minutes = None
+            except (ValueError, TypeError):
+                prep_minutes = None
+
         if not ings or not steps:
             # fallback to heuristic merge
-            h_ings, h_steps = guess_ingredients_and_steps(transcript)
-            if not ings: ings = h_ings
-            if not steps: steps = h_steps
-        return title, ings, steps
+            h_ings, h_steps = guess_ingredients_and_steps(combined_text)
+            if not ings:
+                ings = h_ings
+            if not steps:
+                steps = h_steps
+
+        return title, ings, steps, prep_minutes
     except Exception:
-        return normalize_title(title_hint), *guess_ingredients_and_steps(transcript)
+        title = normalize_title(title_hint)
+        ings, steps = guess_ingredients_and_steps(combined_text)
+        return title, ings, steps, None
 
 
-def download_audio(url: str, tmpdir: Path) -> Tuple[Path, str]:
+def download_audio(url: str, tmpdir: Path) -> Tuple[Path, str, Dict[str, Any]]:
     ydl_opts = {
         "format": "bestaudio/best",
         "outtmpl": str(tmpdir / "%(id)s.%(ext)s"),
@@ -100,7 +230,7 @@ def download_audio(url: str, tmpdir: Path) -> Tuple[Path, str]:
         base = Path(filename).with_suffix("")
         # yt-dlp will choose ext, keep it
         audio_path = Path(filename)
-        return audio_path, info.get("title") or "TikTok Recipe"
+        return audio_path, info.get("title") or "TikTok Recipe", info
 
 def transcribe(audio_path: Path, model_name: str = "small") -> str:
     model = whisper.load_model(model_name)
@@ -181,14 +311,42 @@ def main():
 
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
-        audio_path, raw_title = download_audio(args.url, tmpdir)
+        audio_path, raw_title, video_meta = download_audio(args.url, tmpdir)
         transcript = transcribe(audio_path, model_name=args.whisper_model)
+    combined_text = combine_title_transcript(raw_title, transcript)
 
-    if args.use_gpt and os.getenv("OPENAI_API_KEY"):
-        title, ingredients, steps = gpt_structure(transcript, raw_title)
+    api_key_available = bool(os.getenv("OPENAI_API_KEY"))
+    if args.use_gpt and api_key_available:
+        title, ingredients, steps, prep_minutes = gpt_structure(transcript, raw_title)
     else:
         title = normalize_title(raw_title)
-        ingredients, steps = guess_ingredients_and_steps(transcript)
+        ingredients, steps = guess_ingredients_and_steps(combined_text)
+        prep_minutes = None
+        if api_key_available:
+            # Reuse GPT only to estimate time while keeping heuristic structure.
+            _, _, _, gpt_minutes = gpt_structure(transcript, raw_title)
+            prep_minutes = gpt_minutes
+
+    title_ingredients = extract_ingredients_from_title(raw_title)
+    if title_ingredients:
+        existing_lower = {ing.lower() for ing in ingredients}
+        for extra in title_ingredients:
+            lowered = extra.lower()
+            if lowered not in existing_lower:
+                ingredients.append(extra)
+                existing_lower.add(lowered)
+
+    if prep_minutes is None:
+        prep_minutes = estimate_prep_time(combined_text, steps)
+
+    prep_time_text = f"Environ {prep_minutes} minutes" if prep_minutes else "Temps à préciser"
+    thumbnail_url = None
+    if isinstance(video_meta, dict):
+        thumbnails = video_meta.get("thumbnails") or []
+        if thumbnails:
+            thumbnail_url = thumbnails[-1].get("url")
+        if not thumbnail_url:
+            thumbnail_url = video_meta.get("thumbnail")
 
     # Write Markdown
     md = render_markdown(title, ingredients, steps, args.url)
@@ -214,7 +372,10 @@ def main():
             source_url=args.url,
             ingredients=ingredients,
             steps=steps,
-            tags=["TikTok"]
+            tags=["TikTok"],
+            prep_minutes=prep_minutes,
+            prep_time_text=prep_time_text,
+            thumbnail_url=thumbnail_url
         )
 
     print("Done.")

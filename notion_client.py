@@ -19,50 +19,144 @@ def create_recipe_page(
     source_url: Optional[str],
     ingredients: List[str],
     steps: List[str],
-    servings: Optional[int] = None,
+    tags: Optional[List[str]] = None,
     prep_minutes: Optional[int] = None,
-    cook_minutes: Optional[int] = None,
-    tags: Optional[List[str]] = None
+    prep_time_text: Optional[str] = None,
+    thumbnail_url: Optional[str] = None
 ) -> Dict:
-    properties = {
-        "Name": {"title": [{"text": {"content": title}}]}
+    properties: Dict[str, Dict] = {
+        "Nom": {"title": [{"text": {"content": title}}]}
     }
     if source_url:
-        properties["Source URL"] = {"url": source_url}
-    if servings is not None:
-        properties["Servings"] = {"number": servings}
-    if prep_minutes is not None:
-        properties["Prep Time (min)"] = {"number": prep_minutes}
-    if cook_minutes is not None:
-        properties["Cook Time (min)"] = {"number": cook_minutes}
+        properties["Lien vers la recette"] = {"url": source_url}
     if tags:
         properties["Tags"] = {"multi_select": [{"name": t} for t in tags]}
+    if prep_minutes is not None:
+        properties["Temps (min)"] = {"number": prep_minutes}
 
-    children = []
-    if ingredients:
+    children: List[Dict] = []
+    children.append({
+        "object": "block",
+        "type": "heading_1",
+        "heading_1": {
+            "rich_text": [{"type": "text", "text": {"content": "Recette"}}]
+        }
+    })
+
+    # Photo section
+    children.append({
+        "object": "block",
+        "type": "heading_3",
+        "heading_3": {
+            "rich_text": [{"type": "text", "text": {"content": "Photo"}}]
+        }
+    })
+    if thumbnail_url:
         children.append({
             "object": "block",
-            "type": "heading_2",
-            "heading_2": {"rich_text": [{"type":"text","text":{"content":"Ingrédients / Ingredients"}}]}
+            "type": "image",
+            "image": {
+                "type": "external",
+                "external": {"url": thumbnail_url}
+            }
         })
+    else:
+        children.append({
+            "object": "block",
+            "type": "paragraph",
+            "paragraph": {
+                "rich_text": [{"type": "text", "text": {"content": "Ajouter une photo de la recette."}}]
+            }
+        })
+
+    # Ingredients
+    children.append({
+        "object": "block",
+        "type": "heading_3",
+        "heading_3": {
+            "rich_text": [{"type": "text", "text": {"content": "Ingrédients"}}]
+        }
+    })
+    if ingredients:
         for ing in ingredients:
             children.append({
                 "object": "block",
                 "type": "bulleted_list_item",
-                "bulleted_list_item": {"rich_text":[{"type":"text","text":{"content": ing}}]}
+                "bulleted_list_item": {
+                    "rich_text": [{"type": "text", "text": {"content": ing}}]
+                }
             })
-    if steps:
+    else:
         children.append({
             "object": "block",
-            "type": "heading_2",
-            "heading_2": {"rich_text": [{"type":"text","text":{"content":"Étapes / Steps"}}]}
+            "type": "bulleted_list_item",
+            "bulleted_list_item": {
+                "rich_text": [{"type": "text", "text": {"content": "Ajouter les ingrédients."}}]
+            }
         })
+
+    # Temps de préparation
+    children.append({
+        "object": "block",
+        "type": "heading_3",
+        "heading_3": {
+            "rich_text": [{"type": "text", "text": {"content": "Temps de préparation"}}]
+        }
+    })
+    children.append({
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {
+            "rich_text": [{"type": "text", "text": {"content": prep_time_text or "@mentionn"}}]
+        }
+    })
+
+    # Étapes
+    children.append({
+        "object": "block",
+        "type": "heading_3",
+        "heading_3": {
+            "rich_text": [{"type": "text", "text": {"content": "Étapes"}}]
+        }
+    })
+    if steps:
         for s in steps:
             children.append({
                 "object": "block",
                 "type": "numbered_list_item",
-                "numbered_list_item": {"rich_text":[{"type":"text","text":{"content": s}}]}
+                "numbered_list_item": {
+                    "rich_text": [{"type": "text", "text": {"content": s}}]
+                }
             })
+    else:
+        children.append({
+            "object": "block",
+            "type": "numbered_list_item",
+            "numbered_list_item": {
+                "rich_text": [{"type": "text", "text": {"content": "Ajouter les étapes."}}]
+            }
+        })
+
+    # Lien vers la recette originale
+    children.append({
+        "object": "block",
+        "type": "heading_3",
+        "heading_3": {
+            "rich_text": [{"type": "text", "text": {"content": "Lien vers la recette originale"}}]
+        }
+    })
+    children.append({
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {
+            "rich_text": [{
+                "type": "text",
+                "text": {
+                    "content": "Renseignez l'URL dans la propriété \"Lien vers la recette\" de cette page."
+                }
+            }]
+        }
+    })
 
     payload = {
         "parent": {"database_id": database_id},

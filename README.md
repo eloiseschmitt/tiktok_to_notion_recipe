@@ -5,6 +5,7 @@ A small, local-first toolchain to turn a TikTok cooking video into a clean recip
 - **Local mode** (no external AI): yt-dlp + Whisper transcription + heuristic parser → Markdown (+ optional PDF).
 - **Optional GPT mode**: If you set `OPENAI_API_KEY`, the script will ask GPT to structure the recipe more accurately.
 - **Optional Notion push**: If you set `NOTION_TOKEN` and `NOTION_DATABASE_ID`, the script can create a page in your Notion recipe database.
+  The parser also mines likely ingredients from the TikTok title when they are listed there.
 
 > Works for French & English recipes. Variables and code in English, as requested.
 
@@ -45,16 +46,22 @@ A small, local-first toolchain to turn a TikTok cooking video into a clean recip
      python tiktok_to_notion.py "https://www.tiktok.com/@creator/video/123456789" --to-notion
      ```
 
-## Notion database schema (recommended)
+The script will recreate the following Notion template structure for each recipe:
+- H1 "Recette"
+- Section **Photo** (auto-populated with the TikTok thumbnail when available)
+- Section **Ingrédients** (bulleted list)
+- Section **Temps de préparation** (GPT estimate when possible, otherwise heuristic)
+- Section **Étapes** (numbered list)
+- Section **Lien vers la recette originale** (reminder to use the page property)
 
-- **Name** (Title)
-- **Source URL** (URL)
+## Notion database schema (required)
+
+- **Nom** (Title)
 - **Tags** (Multi-select) – e.g., "TikTok", "Quick", "Dessert"
-- **Servings** (Number)
-- **Prep Time (min)** (Number)
-- **Cook Time (min)** (Number)
+- **Temps (min)** (Number) – script writes the estimated prep time in minutes
+- **Lien vers la recette** (URL)
 
-The script will try to fill these if present. Missing properties are ignored.
+The script writes to these properties only. You can add other properties for your own use; they will be left untouched.
 
 ## Output
 
@@ -65,5 +72,6 @@ The script will try to fill these if present. Missing properties are ignored.
 ## Notes & limitations
 
 - Heuristic parsing is intentionally conservative; review quantities/units.
+- When GPT is disabled, the script still tries to pull ingredient hints from the TikTok title in addition to the transcript.
 - Whisper accuracy depends on audio clarity. Consider `--whisper-model medium` for better results.
 - Respect creator rights. Keep recipes for personal use.

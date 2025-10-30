@@ -1,5 +1,6 @@
 yt-dlp==2024.10.7
 openai-whisper==20231117
+numpy>=1.26.0
 python-dotenv==1.0.1
 requests==2.32.3
 pydantic==2.9.2
